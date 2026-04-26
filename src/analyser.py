@@ -94,6 +94,16 @@ def _call_gemini(prompt: str, api_key: str) -> Optional[str]:
 
     try:
         response = requests.post(url, json=payload, timeout=30)
+        if response.status_code == 404:
+            logger.error(
+                f"Gemini model '{LLM_MODEL}' not found (404). "
+                f"Check LLM_MODEL in config.py. Available free models: "
+                f"gemini-2.0-flash, gemini-1.5-flash-latest, gemini-1.5-pro-latest"
+            )
+            return None
+        if response.status_code == 400:
+            logger.error(f"Gemini bad request (400): {response.text[:300]}")
+            return None
         response.raise_for_status()
         data = response.json()
         candidates = data.get("candidates", [])
@@ -196,10 +206,10 @@ def analyse_deals(deals: list[dict]) -> list[dict]:
         if response_text:
             batch = _parse_llm_response(response_text, batch)
         else:
-            logger.warning(f"No LLM response for batch {batch_num}, using default scores")
+            logger.warning(f"No LLM response for batch {batch_num} — passing deals through with neutral score")
             for deal in batch:
-                deal["llm_score"] = 5
-                deal["llm_reason"] = "LLM unavailable"
+                deal["llm_score"] = LLM_MIN_SCORE  # Use threshold score so they pass through
+                deal["llm_reason"] = "LLM unavailable — not filtered"
                 deal["llm_category"] = "General"
                 deal["llm_genuine"] = True
 
