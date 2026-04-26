@@ -23,7 +23,12 @@ SERPER_SEARCH_URL = "https://google.serper.dev/search"
 def _get_api_key() -> Optional[str]:
     key = os.environ.get("SERPER_API_KEY")
     if not key:
-        logger.warning("SERPER_API_KEY not set — skipping Serper searches")
+        logger.warning(
+            "SERPER_API_KEY not set — skipping Serper searches. "
+            "Add it to GitHub repo secrets: Settings → Secrets → Actions → SERPER_API_KEY"
+        )
+    else:
+        logger.info(f"SERPER_API_KEY loaded (length: {len(key)}, starts: {key[:4]}...)")
     return key
 
 
@@ -63,6 +68,13 @@ def _search_shopping(query: str, api_key: str) -> list[dict]:
 
     try:
         response = requests.post(SERPER_API_URL, json=payload, headers=headers, timeout=15)
+        if response.status_code == 403:
+            logger.error(
+                f"Serper 403 Forbidden for '{query}'. "
+                f"Check your SERPER_API_KEY is correct and active at serper.dev. "
+                f"Response: {response.text[:200]}"
+            )
+            return []
         response.raise_for_status()
         data = response.json()
         return data.get("shopping", [])
