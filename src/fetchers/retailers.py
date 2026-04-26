@@ -27,17 +27,19 @@ SERPER_SHOPPING_URL = "https://google.serper.dev/shopping"
 
 # ONLY these retailers are trusted. Anything else (Cash Converters, random
 # marketplaces, overseas sellers, etc.) is filtered out entirely.
+#
+# Amazon AU: best structured pricing data from Shopping API, reliable discounts
+# Officeworks: price-beat guarantee — flagged if cheapest, regardless of % off
+# Others kept as secondary — only surface if they hit the 40% threshold
 TRUSTED_RETAILERS: dict[str, str] = {
-    "jbhifi.com.au":       "JB Hi-Fi",
-    "officeworks.com.au":  "Officeworks",
     "amazon.com.au":       "Amazon AU",
-    "bigw.com.au":         "Big W",
-    "target.com.au":       "Target AU",
+    "officeworks.com.au":  "Officeworks",
+    "jbhifi.com.au":       "JB Hi-Fi",
     "kogan.com":           "Kogan",
     "catch.com.au":        "Catch",
+    "bigw.com.au":         "Big W",
     "harveynorman.com.au": "Harvey Norman",
     "costco.com.au":       "Costco AU",
-    "themarket.com":       "The Market",
 }
 
 

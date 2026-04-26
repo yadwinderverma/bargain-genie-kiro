@@ -10,16 +10,16 @@ SEARCH_QUERIES = [
     "beats powerbeats pro 2",
     "shokz openfit 2",
     "bose ultra open earbuds",
-    "airpod",
+    "airpods pro",
 ]
 
 # --- Deal Thresholds ---
-# For regular retailers: alert if price is at least this % below the highest
-# price seen across all retailers (i.e. a genuine price drop vs market).
-MIN_DISCOUNT_PERCENT = 20       # 20-30% off vs market price triggers an alert
+# OzBargain: community votes are the signal — no discount % required
+MIN_OZBARGAIN_VOTES = 10        # Minimum upvotes to surface an OzBargain deal
 
-# For OzBargain: community votes are the signal, not % off
-MIN_OZBARGAIN_VOTES = 10        # Minimum upvotes to consider an OzBargain deal
+# Retailers: only alert on a heavy discount — these products rarely go on sale
+# so 40%+ is the bar worth getting out of bed for
+MIN_DISCOUNT_PERCENT = 40
 
 # LLM quality gate — deals scoring below this are not sent to Slack
 LLM_MIN_SCORE = 6
