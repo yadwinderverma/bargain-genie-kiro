@@ -15,7 +15,6 @@ from src.analyser import analyse_deals
 from src.cache import filter_new_deals, mark_deals_alerted
 from src.fetchers.ozbargain import fetch_ozbargain_deals
 from src.fetchers.retailers import fetch_retailer_deals
-from src.fetchers.serper import fetch_serper_deals
 from src.notifier import send_slack_alerts, send_slack_error_message, send_slack_no_deals_message
 
 # Configure logging
@@ -48,12 +47,8 @@ def run() -> int:
         logger.info(f"OzBargain: {len(ozb_deals)} deals")
         all_deals.extend(ozb_deals)
 
-        serper_deals = fetch_serper_deals()
-        logger.info(f"Serper: {len(serper_deals)} deals")
-        all_deals.extend(serper_deals)
-
         retailer_deals = fetch_retailer_deals()
-        logger.info(f"Retailers: {len(retailer_deals)} deals")
+        logger.info(f"Retailers (Shopping): {len(retailer_deals)} deals")
         all_deals.extend(retailer_deals)
 
         logger.info(f"Total deals fetched: {len(all_deals)}")
@@ -109,7 +104,7 @@ def run() -> int:
         elapsed = (datetime.now(timezone.utc) - start_time).total_seconds()
         logger.info("=" * 60)
         logger.info(f"Run complete in {elapsed:.1f}s")
-        logger.info(f"  Fetched:   {len(all_deals)} deals")
+        logger.info(f"  Fetched:   {len(all_deals)} deals (OzBargain + Shopping)")
         logger.info(f"  New:       {len(new_deals)} deals")
         logger.info(f"  Alerted:   {len(quality_deals)} deals")
         logger.info("=" * 60)
