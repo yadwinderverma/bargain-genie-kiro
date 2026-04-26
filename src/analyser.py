@@ -1,189 +1,159 @@
 """
-LLM-based deal analyser using Google Gemini API (free tier).
-Scores deals 1-10 for genuine bargain quality and filters out fake discounts.
+LLM-based deal analyser using Google Gemini SDK (google-genai).
+Uses structured output (response_schema) so we never need to parse JSON manually.
 
-Free tier: 15 requests/minute, 1500 requests/day.
+Free tier: 15 req/min, 1500 req/day on gemini-2.5-flash.
 Get your API key at: https://aistudio.google.com/app/apikey
 """
 
-import json
 import logging
 import os
 import time
 from typing import Optional
 
-import requests
+from google import genai
+from google.genai import types
+from pydantic import BaseModel
 
 from config import LLM_MAX_DEALS_PER_BATCH, LLM_MIN_SCORE, LLM_MODEL, OZBARGAIN_SCORE_BOOST, OZBARGAIN_TRUSTED
 
 logger = logging.getLogger(__name__)
 
-GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
-RATE_LIMIT_DELAY = 5  # Seconds between API calls to stay within free tier
+RATE_LIMIT_DELAY = 4  # Seconds between batches — free tier is 15 req/min
 
 
-def _get_api_key() -> Optional[str]:
-    key = os.environ.get("GEMINI_API_KEY")
-    if not key:
-        logger.warning("GEMINI_API_KEY not set — skipping LLM analysis, passing all deals through")
-    return key
+# ---------------------------------------------------------------------------
+# Structured output schema — Gemini will return exactly this shape
+# ---------------------------------------------------------------------------
+
+class DealScore(BaseModel):
+    deal_index: int
+    score: int                  # 1–10
+    genuine_discount: bool
+    reason: str                 # Max ~20 words
+    category: str               # e.g. "Electronics", "Appliances"
 
 
-def _build_analysis_prompt(deals: list[dict]) -> str:
-    """Build the prompt for batch deal analysis."""
+class DealAnalysis(BaseModel):
+    results: list[DealScore]
+
+
+# ---------------------------------------------------------------------------
+# Gemini client
+# ---------------------------------------------------------------------------
+
+def _get_client() -> Optional[genai.Client]:
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        logger.warning(
+            "GEMINI_API_KEY not set — skipping LLM analysis, passing all deals through. "
+            "Get a free key at https://aistudio.google.com/app/apikey"
+        )
+        return None
+    return genai.Client(api_key=api_key)
+
+
+# ---------------------------------------------------------------------------
+# Prompt builder
+# ---------------------------------------------------------------------------
+
+def _build_prompt(deals: list[dict]) -> str:
     deals_text = ""
     for i, deal in enumerate(deals, 1):
-        is_ozb = deal.get("source") == "ozbargain"
         community_note = ""
-        if is_ozb and deal.get("community_validated"):
-            community_note = f" COMMUNITY VALIDATED on OzBargain ({deal.get('votes', 0)} upvotes)"
+        if deal.get("source") == "ozbargain" and deal.get("community_validated"):
+            community_note = f" [COMMUNITY VALIDATED — {deal.get('votes', 0)} OzBargain upvotes]"
 
         deals_text += (
             f"\nDeal {i}:{community_note}\n"
-            f"- Title: {deal.get('title', 'Unknown')}\n"
-            f"- Source: {deal.get('source', 'Unknown')}\n"
-            f"- Original Price: ${deal.get('original_price') or 'Unknown'}\n"
-            f"- Sale Price: ${deal.get('sale_price') or 'Unknown'}\n"
-            f"- Discount: {deal.get('discount_pct') or 'Unknown'}%\n"
-            f"- OzBargain Votes: {deal.get('votes', 0)}\n"
-            f"- Description: {deal.get('description', '')[:200]}\n"
+            f"  Title:          {deal.get('title', 'Unknown')}\n"
+            f"  Source:         {deal.get('source', 'Unknown')}\n"
+            f"  Original Price: ${deal.get('original_price') or 'Unknown'}\n"
+            f"  Sale Price:     ${deal.get('sale_price') or 'Unknown'}\n"
+            f"  Discount:       {deal.get('discount_pct') or 'Unknown'}%\n"
+            f"  OzBargain Votes:{deal.get('votes', 0)}\n"
+            f"  Description:    {deal.get('description', '')[:200]}\n"
         )
 
-    prompt = (
-        "You are an Australian bargain hunting expert. Analyse these deals and rate each one.\n\n"
-        "IMPORTANT CONTEXT: OzBargain (ozbargain.com.au) is Australia's largest deal-sharing community. "
-        "When a deal is marked 'COMMUNITY VALIDATED on OzBargain', it means real Australian shoppers have "
-        "upvoted it as a genuine bargain. These deals have already passed community scrutiny — treat them "
-        "with higher confidence. The discount may not always be 50%+ but the community has judged it "
-        "worthwhile. Score these more generously unless there is a clear red flag.\n\n"
-        "For each deal, assess:\n"
-        "1. Is the discount genuine? (Watch for inflated 'original' prices — a common retail trick)\n"
-        "2. Is this a good product at a good price for Australian consumers?\n"
-        "3. Is the source reputable (OzBargain, JB Hi-Fi, Kogan, Catch, etc.)?\n"
-        "4. Would a savvy Australian shopper consider this a real bargain?\n\n"
+    return (
+        "You are an expert Australian bargain hunter. Rate each deal below.\n\n"
+        "KEY CONTEXT:\n"
+        "- OzBargain (ozbargain.com.au) is Australia's biggest deal community. "
+        "Deals marked COMMUNITY VALIDATED have been upvoted by real shoppers — "
+        "they've already passed community scrutiny. Score these generously (baseline 7) "
+        "unless there's a clear red flag like a fake inflated original price.\n"
+        "- Watch for fake discounts: retailers sometimes inflate the 'original' price "
+        "to make the discount look bigger than it is.\n"
+        "- Consider value for Australian consumers specifically.\n\n"
         f"{deals_text}\n"
-        "Respond with ONLY a JSON array (no markdown, no explanation outside JSON) like this:\n"
-        "[\n"
-        "  {\n"
-        '    "deal_index": 1,\n'
-        '    "score": 8,\n'
-        '    "genuine_discount": true,\n'
-        '    "reason": "Brief reason (max 20 words)",\n'
-        '    "category": "Electronics"\n'
-        "  },\n"
-        "  ...\n"
-        "]\n\n"
-        "Score guide: 1-4 = skip, 5-6 = marginal, 7-8 = good deal, 9-10 = exceptional bargain.\n"
-        "For community-validated OzBargain deals, start from a baseline of 7 unless there is a red flag.\n"
-        "For other sources, be strict — only score 7+ if you would genuinely recommend it to a friend."
+        "Score guide:\n"
+        "  1–4  = Not a real deal, skip\n"
+        "  5–6  = Marginal, borderline\n"
+        "  7–8  = Genuine good deal\n"
+        "  9–10 = Exceptional bargain\n\n"
+        "For community-validated OzBargain deals: start at 7 unless red flags.\n"
+        "For other sources: be strict, only 7+ if you'd tell a friend about it."
     )
 
-    return prompt
 
+# ---------------------------------------------------------------------------
+# Score attachment + OzBargain boost
+# ---------------------------------------------------------------------------
 
-def _call_gemini(prompt: str, api_key: str) -> Optional[str]:
-    """Call Gemini API and return the text response."""
-    url = f"{GEMINI_API_BASE}/{LLM_MODEL}:generateContent?key={api_key}"
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": 1024,
-        },
-    }
-
-    try:
-        response = requests.post(url, json=payload, timeout=30)
-        if response.status_code == 404:
-            logger.error(
-                f"Gemini model '{LLM_MODEL}' not found (404). "
-                f"Check LLM_MODEL in config.py. Available free models: "
-                f"gemini-2.0-flash, gemini-1.5-flash-latest, gemini-1.5-pro-latest"
-            )
-            return None
-        if response.status_code == 400:
-            logger.error(f"Gemini bad request (400): {response.text[:300]}")
-            return None
-        response.raise_for_status()
-        data = response.json()
-        candidates = data.get("candidates", [])
-        if candidates:
-            parts = candidates[0].get("content", {}).get("parts", [])
-            if parts:
-                return parts[0].get("text", "")
-    except requests.RequestException as e:
-        logger.error(f"Gemini API call failed: {e}")
-    except (KeyError, IndexError) as e:
-        logger.error(f"Unexpected Gemini response format: {e}")
-
-    return None
-
-
-def _parse_llm_response(response_text: str, deals: list[dict]) -> list[dict]:
-    """Parse LLM JSON response and attach scores to deals."""
-    # Strip markdown code fences if present
-    text = response_text.strip()
-    if text.startswith("```"):
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-    text = text.strip()
-
-    try:
-        scores = json.loads(text)
-    except json.JSONDecodeError as e:
-        logger.error(f"Failed to parse LLM response as JSON: {e}\nResponse: {text[:500]}")
-        # Fallback: return all deals with neutral score
-        for deal in deals:
-            deal["llm_score"] = 5
-            deal["llm_reason"] = "LLM parse error — manual review needed"
-            deal["llm_category"] = "Unknown"
-        return deals
-
-    # Map scores back to deals
-    score_map = {item["deal_index"]: item for item in scores if isinstance(item, dict)}
+def _attach_scores(deals: list[dict], results: list[DealScore]) -> list[dict]:
+    score_map = {r.deal_index: r for r in results}
 
     for i, deal in enumerate(deals, 1):
-        score_data = score_map.get(i, {})
-        base_score = score_data.get("score", 5)
+        result = score_map.get(i)
+        if result is None:
+            logger.warning(f"No score returned for deal {i}: {deal.get('title', '')[:50]}")
+            deal["llm_score"] = LLM_MIN_SCORE
+            deal["llm_reason"] = "No LLM score returned"
+            deal["llm_category"] = "General"
+            deal["llm_genuine"] = True
+            continue
 
-        # Apply OzBargain trust boost — community-validated deals get a bump
-        # since the community has already done the vetting work
+        base_score = max(1, min(10, result.score))  # Clamp to 1–10
+
+        # OzBargain community trust boost
         if (
             OZBARGAIN_TRUSTED
             and deal.get("source") == "ozbargain"
             and deal.get("community_validated")
         ):
-            boosted_score = min(10, base_score + OZBARGAIN_SCORE_BOOST)
-            if boosted_score != base_score:
-                logger.debug(
-                    f"OzBargain trust boost: '{deal.get('title', '')[:40]}' "
-                    f"{base_score} → {boosted_score}"
+            boosted = min(10, base_score + OZBARGAIN_SCORE_BOOST)
+            if boosted != base_score:
+                logger.info(
+                    f"OzBargain boost: '{deal.get('title', '')[:45]}' "
+                    f"{base_score} → {boosted}"
                 )
-            deal["llm_score"] = boosted_score
+            deal["llm_score"] = boosted
         else:
             deal["llm_score"] = base_score
 
-        deal["llm_reason"] = score_data.get("reason", "No analysis available")
-        deal["llm_category"] = score_data.get("category", "General")
-        deal["llm_genuine"] = score_data.get("genuine_discount", True)
+        deal["llm_reason"] = result.reason
+        deal["llm_category"] = result.category
+        deal["llm_genuine"] = result.genuine_discount
 
     return deals
 
 
+# ---------------------------------------------------------------------------
+# Main analysis function
+# ---------------------------------------------------------------------------
+
 def analyse_deals(deals: list[dict]) -> list[dict]:
     """
-    Run LLM analysis on deals and return only those scoring >= LLM_MIN_SCORE.
-    Processes deals in batches to stay within API rate limits.
+    Score deals with Gemini and return only those >= LLM_MIN_SCORE.
+    Uses structured output — no JSON parsing needed.
     """
-    api_key = _get_api_key()
+    client = _get_client()
 
-    if not api_key:
-        # No API key — pass all deals through with a default score
-        logger.info("No Gemini API key — passing all deals through without LLM scoring")
+    if not client:
+        # No API key — pass everything through
         for deal in deals:
             deal["llm_score"] = 7
-            deal["llm_reason"] = "LLM analysis skipped (no API key)"
+            deal["llm_reason"] = "LLM skipped (no API key)"
             deal["llm_category"] = "General"
             deal["llm_genuine"] = True
         return deals
@@ -191,36 +161,50 @@ def analyse_deals(deals: list[dict]) -> list[dict]:
     if not deals:
         return []
 
-    logger.info(f"Analysing {len(deals)} deals with Gemini ({LLM_MODEL})")
+    logger.info(f"Analysing {len(deals)} deals with {LLM_MODEL}")
     scored_deals = []
 
-    # Process in batches
     for i in range(0, len(deals), LLM_MAX_DEALS_PER_BATCH):
         batch = deals[i : i + LLM_MAX_DEALS_PER_BATCH]
         batch_num = i // LLM_MAX_DEALS_PER_BATCH + 1
-        logger.info(f"LLM batch {batch_num}: analysing {len(batch)} deals")
+        logger.info(f"LLM batch {batch_num}/{-(-len(deals) // LLM_MAX_DEALS_PER_BATCH)}: {len(batch)} deals")
 
-        prompt = _build_analysis_prompt(batch)
-        response_text = _call_gemini(prompt, api_key)
+        prompt = _build_prompt(batch)
 
-        if response_text:
-            batch = _parse_llm_response(response_text, batch)
-        else:
-            logger.warning(f"No LLM response for batch {batch_num} — passing deals through with neutral score")
+        try:
+            response = client.models.generate_content(
+                model=LLM_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=DealAnalysis,
+                    temperature=0.1,
+                ),
+            )
+            analysis: DealAnalysis = response.parsed
+            batch = _attach_scores(batch, analysis.results)
+            logger.info(
+                f"Batch {batch_num} scores: "
+                + ", ".join(f"{d.get('llm_score')}" for d in batch)
+            )
+
+        except Exception as e:
+            logger.error(f"Gemini call failed for batch {batch_num}: {e}")
+            # On failure, pass deals through at threshold so they aren't silently dropped
             for deal in batch:
-                deal["llm_score"] = LLM_MIN_SCORE  # Use threshold score so they pass through
-                deal["llm_reason"] = "LLM unavailable — not filtered"
+                deal["llm_score"] = LLM_MIN_SCORE
+                deal["llm_reason"] = f"LLM error — unfiltered ({type(e).__name__})"
                 deal["llm_category"] = "General"
                 deal["llm_genuine"] = True
 
         scored_deals.extend(batch)
 
-        # Rate limit: wait between batches
+        # Respect free tier rate limit between batches
         if i + LLM_MAX_DEALS_PER_BATCH < len(deals):
             time.sleep(RATE_LIMIT_DELAY)
 
-    # Filter by minimum score
     passing = [d for d in scored_deals if d.get("llm_score", 0) >= LLM_MIN_SCORE]
-    logger.info(f"LLM filter: {len(scored_deals)} analysed → {len(passing)} passed (score >= {LLM_MIN_SCORE})")
-
+    logger.info(
+        f"LLM filter: {len(scored_deals)} analysed → {len(passing)} passed (score >= {LLM_MIN_SCORE})"
+    )
     return passing

@@ -2,3 +2,5 @@ feedparser==6.0.11
 requests==2.31.0
 beautifulsoup4==4.12.3
 lxml==5.2.2
+google-genai==1.10.0
+pydantic==2.7.1

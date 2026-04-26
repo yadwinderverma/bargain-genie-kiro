@@ -42,5 +42,5 @@ SLACK_CHANNEL_NAME = "#bargains"  # Just for display in logs
 MAX_SLACK_ALERTS_PER_RUN = 10    # Cap alerts per run to avoid spam
 
 # --- LLM ---
-LLM_MODEL = "gemini-2.5-flash"   # Free Gemini model (gemini-2.0-flash is current free tier)
+LLM_MODEL = "gemini-2.5-flash"   # Free Gemini model — matches google-genai SDK model names
 LLM_MAX_DEALS_PER_BATCH = 5      # Deals per LLM API call (batching saves quota)
