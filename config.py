@@ -50,6 +50,13 @@ CACHE_MAX_AGE_DAYS = 7
 # --- Slack ---
 SLACK_CHANNEL_NAME = "#bargains"
 MAX_SLACK_ALERTS_PER_RUN = 10
+# Who to notify when a deal is found.
+# Options:
+#   "@here"        — notifies active members in the channel (recommended)
+#   "@channel"     — notifies ALL members (noisy)
+#   "@your.name"   — notifies just you (replace with your Slack display name)
+#   ""             — no mention, message just appears silently in channel
+SLACK_NOTIFY_USER = "@channel"
 
 # --- LLM ---
 LLM_MODEL = "gemini-2.5-flash"  # Free tier — matches google-genai SDK model names

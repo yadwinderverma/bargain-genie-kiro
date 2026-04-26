@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 import requests
 
-from config import MAX_SLACK_ALERTS_PER_RUN, SLACK_CHANNEL_NAME
+from config import MAX_SLACK_ALERTS_PER_RUN, SLACK_CHANNEL_NAME, SLACK_NOTIFY_USER
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +139,9 @@ def _build_summary_header(deals: list[dict], run_time: str) -> list[dict]:
     sources = list({d.get("source", "").split("_")[0] for d in deals})
     sources_text = ", ".join(s.title() for s in sources if s)
 
+    # Mention line — triggers Slack notification
+    mention = f"{SLACK_NOTIFY_USER} " if SLACK_NOTIFY_USER else ""
+
     return [
         {
             "type": "header",
@@ -149,11 +152,18 @@ def _build_summary_header(deals: list[dict], run_time: str) -> list[dict]:
             },
         },
         {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"{mention}*{count} deal{'s' if count != 1 else ''}* matching your watchlist",
+            },
+        },
+        {
             "type": "context",
             "elements": [
                 {
                     "type": "mrkdwn",
-                    "text": f"📅 {run_time}  |  Sources: {sources_text or 'Various'}  |  Min 50% off",
+                    "text": f"📅 {run_time}  |  Sources: {sources_text or 'Various'}",
                 }
             ],
         },
@@ -195,7 +205,7 @@ def send_slack_alerts(deals: list[dict]) -> bool:
     for chunk_idx, chunk in enumerate(block_chunks):
         payload = {
             "blocks": chunk,
-            "text": f"🛍️ {len(deals)} bargains found! Check the channel for details.",
+            "text": f"{''+SLACK_NOTIFY_USER+' ' if SLACK_NOTIFY_USER else ''}🛍️ {len(deals)} bargain{'s' if len(deals) != 1 else ''} found on your watchlist!",
         }
 
         try:
