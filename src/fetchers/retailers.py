@@ -2,11 +2,12 @@
 Retailer price fetcher — uses Serper Shopping API for structured price data.
 
 Strategy:
-1. For each product in SEARCH_QUERIES, run a Google Shopping search
-2. Collect prices from ALL retailers in one shot (Shopping API returns many retailers)
-3. Find the market high price and flag anything MIN_DISCOUNT_PERCENT% below it
-4. Officeworks gets special treatment: if they're the cheapest (or close to it),
-   flag it as a price-beat deal even without a big % discount
+1. For each product in SEARCH_QUERIES, run ONE Google Shopping search
+2. Filter results to TRUSTED_RETAILERS only (no Cash Converters, random sellers etc.)
+3. Filter results to only those matching the product keywords exactly
+4. Use the median of TRUSTED retailer prices as the market baseline (not the inflated max)
+5. Flag anything MIN_DISCOUNT_PERCENT% below that baseline
+6. Officeworks: flag if they're cheapest (price-beat signal)
 """
 
 import logging
@@ -24,20 +25,19 @@ logger = logging.getLogger(__name__)
 
 SERPER_SHOPPING_URL = "https://google.serper.dev/shopping"
 
-# Retailers we care about — maps domain keywords to clean names
-KNOWN_RETAILERS = {
-    "jbhifi.com.au":      "JB Hi-Fi",
-    "kogan.com":          "Kogan",
-    "catch.com.au":       "Catch",
-    "amazon.com.au":      "Amazon AU",
-    "bigw.com.au":        "Big W",
-    "target.com.au":      "Target AU",
-    "officeworks.com.au": "Officeworks",
-    "harvey norman":      "Harvey Norman",
-    "harveynorman.com.au":"Harvey Norman",
-    "myer.com.au":        "Myer",
-    "ebay.com.au":        "eBay AU",
-    "costco.com.au":      "Costco AU",
+# ONLY these retailers are trusted. Anything else (Cash Converters, random
+# marketplaces, overseas sellers, etc.) is filtered out entirely.
+TRUSTED_RETAILERS: dict[str, str] = {
+    "jbhifi.com.au":       "JB Hi-Fi",
+    "officeworks.com.au":  "Officeworks",
+    "amazon.com.au":       "Amazon AU",
+    "bigw.com.au":         "Big W",
+    "target.com.au":       "Target AU",
+    "kogan.com":           "Kogan",
+    "catch.com.au":        "Catch",
+    "harveynorman.com.au": "Harvey Norman",
+    "costco.com.au":       "Costco AU",
+    "themarket.com":       "The Market",
 }
 
 
@@ -59,24 +59,34 @@ def _parse_price(price_str: str) -> Optional[float]:
         return None
 
 
-def _retailer_name_from_source(source: str) -> str:
-    """Map a Serper 'source' field to a clean retailer name."""
+def _match_trusted_retailer(source: str) -> Optional[str]:
+    """
+    Return the clean retailer name if source matches a trusted retailer, else None.
+    This is the gatekeeper — anything not in TRUSTED_RETAILERS is dropped.
+    """
     source_lower = source.lower()
-    for domain, name in KNOWN_RETAILERS.items():
+    for domain, name in TRUSTED_RETAILERS.items():
         if domain in source_lower:
             return name
-    return source.title()
+    return None
 
 
 def _is_officeworks(source: str) -> bool:
     return "officeworks" in source.lower()
 
 
+def _matches_product(title: str, query: str) -> bool:
+    """
+    All keywords in the query must appear in the title.
+    e.g. "shokz openfit 2" requires 'shokz', 'openfit', '2' all in title.
+    This prevents "Shokz OpenComm 2" or "OpenFit Air" from matching "shokz openfit 2".
+    """
+    title_lower = title.lower()
+    return all(kw in title_lower for kw in query.lower().split())
+
+
 def _fetch_shopping_results(query: str, api_key: str) -> list[dict]:
-    """
-    Run a Google Shopping search and return raw results.
-    Shopping API returns structured price + originalPrice per listing.
-    """
+    """Run a Google Shopping search — 1 call per product."""
     headers = {
         "X-API-KEY": api_key,
         "Content-Type": "application/json",
@@ -85,7 +95,7 @@ def _fetch_shopping_results(query: str, api_key: str) -> list[dict]:
         "q": f"{query} Australia",
         "gl": "au",
         "hl": "en",
-        "num": 20,  # Get more results to have a good price spread
+        "num": 20,
     }
     try:
         response = requests.post(SERPER_SHOPPING_URL, json=payload, headers=headers, timeout=15)
@@ -104,114 +114,127 @@ def _fetch_shopping_results(query: str, api_key: str) -> list[dict]:
 
 def _analyse_prices(query: str, results: list[dict]) -> list[dict]:
     """
-    Given Shopping results for a product, find the market price range and
-    return deals that are genuinely discounted vs the market.
-
-    Also flags Officeworks if they're the cheapest (price-beat signal).
+    Filter to trusted retailers + exact product match, then find genuine discounts.
+    Uses median of trusted-retailer prices as the market baseline — not the max,
+    which is often an inflated outlier from aggregator sites.
     """
     if not results:
         return []
 
-    # Parse all prices
-    priced = []
+    trusted = []
+    skipped_retailer = 0
+    skipped_product = 0
+
     for item in results:
         source = item.get("source", "")
         title = item.get("title", "")
         link = item.get("link", "")
         price_str = item.get("price", "")
         original_str = item.get("originalPrice", "")
-        rating = item.get("rating")
-        reviews = item.get("ratingCount")
+
+        # Gate 1: trusted retailer only
+        retailer_name = _match_trusted_retailer(source)
+        if not retailer_name:
+            logger.debug(f"  Skipping untrusted seller: '{source}' — '{title[:50]}'")
+            skipped_retailer += 1
+            continue
+
+        # Gate 2: must actually be the product we searched for
+        if not _matches_product(title, query):
+            logger.debug(f"  Skipping wrong product at {retailer_name}: '{title[:60]}'")
+            skipped_product += 1
+            continue
 
         current_price = _parse_price(price_str)
-        original_price = _parse_price(original_str)
-
         if not current_price or not link:
             continue
 
-        priced.append({
+        # Gate 3: ignore suspiciously high "original" prices (likely aggregator noise).
+        # If originalPrice is more than 2× the current price, discard it — it's not real.
+        raw_original = _parse_price(original_str)
+        original_price = None
+        if raw_original and raw_original <= current_price * 2.0:
+            original_price = raw_original
+
+        trusted.append({
             "source": source,
-            "retailer": _retailer_name_from_source(source),
+            "retailer": retailer_name,
             "title": title,
             "link": link,
             "current_price": current_price,
             "original_price": original_price,
-            "rating": rating,
-            "reviews": reviews,
             "is_officeworks": _is_officeworks(source),
         })
 
-    if not priced:
-        logger.info(f"No priced results for '{query}'")
+    logger.info(
+        f"'{query}' — {len(results)} results: "
+        f"{len(trusted)} trusted, {skipped_retailer} untrusted sellers skipped, "
+        f"{skipped_product} wrong products skipped"
+    )
+
+    if not trusted:
         return []
 
-    prices = [p["current_price"] for p in priced]
-    market_high = max(prices)
-    market_low = min(prices)
-    market_median = sorted(prices)[len(prices) // 2]
-
+    prices = sorted(p["current_price"] for p in trusted)
+    market_low = prices[0]
+    market_median = prices[len(prices) // 2]
+    # Use median as the "normal" price — much more stable than max which can be wildly inflated
     logger.info(
-        f"'{query}' — {len(priced)} retailers: "
-        f"low=${market_low:.0f}, median=${market_median:.0f}, high=${market_high:.0f}"
+        f"  Trusted price range: low=${market_low:.0f}, "
+        f"median=${market_median:.0f} across {len(trusted)} retailers"
     )
 
     deals = []
     now = datetime.now(timezone.utc).isoformat()
 
-    for item in priced:
+    for item in trusted:
         current_price = item["current_price"]
         original_price = item["original_price"]
         is_officeworks = item["is_officeworks"]
 
-        # Calculate discount vs the item's own original price (if available)
+        # Discount vs item's own stated original price (already sanity-checked above)
         own_discount = None
         if original_price and original_price > current_price:
             own_discount = round((1 - current_price / original_price) * 100, 1)
 
-        # Calculate discount vs market high (how much cheaper than the most expensive retailer)
-        vs_market_high = round((1 - current_price / market_high) * 100, 1) if market_high > 0 else 0
+        # Discount vs median trusted-retailer price
+        vs_median = round((1 - current_price / market_median) * 100, 1) if market_median > 0 else 0
 
-        # Calculate discount vs market median (fairer comparison)
-        vs_market_median = round((1 - current_price / market_median) * 100, 1) if market_median > 0 else 0
-
-        # Is this the cheapest option?
         is_cheapest = current_price == market_low
-        is_near_cheapest = current_price <= market_low * 1.05  # Within 5% of cheapest
+        is_near_cheapest = current_price <= market_low * 1.05
 
-        # --- Decision logic ---
         should_include = False
         deal_reason = ""
 
         if is_officeworks:
-            # Officeworks: include if they're cheapest or near-cheapest
-            # Their price beat means this is likely the best you'll get in AU
+            # Officeworks: flag if cheapest or near-cheapest — price-beat guarantee
+            # means this is likely the best available price in AU
             if is_cheapest:
                 should_include = True
-                deal_reason = f"Officeworks cheapest at ${current_price:.0f} (market low, price-beat guarantee)"
+                deal_reason = f"Cheapest in AU at ${current_price:.0f} — Officeworks price-beat guarantee"
             elif is_near_cheapest:
                 should_include = True
-                deal_reason = f"Officeworks near-cheapest at ${current_price:.0f} (within 5% of market low)"
-            elif vs_market_median >= MIN_DISCOUNT_PERCENT:
+                deal_reason = f"Near-cheapest at ${current_price:.0f} (within 5% of market low ${market_low:.0f})"
+            elif vs_median >= MIN_DISCOUNT_PERCENT:
                 should_include = True
-                deal_reason = f"Officeworks {vs_market_median:.0f}% below median market price"
+                deal_reason = f"{vs_median:.0f}% below median market price of ${market_median:.0f}"
         else:
-            # Other retailers: need a meaningful discount vs market or own original price
+            # Other trusted retailers: need a real discount
             if own_discount is not None and own_discount >= MIN_DISCOUNT_PERCENT:
                 should_include = True
-                deal_reason = f"{own_discount:.0f}% off original price (${original_price:.0f} → ${current_price:.0f})"
-            elif vs_market_median >= MIN_DISCOUNT_PERCENT:
+                deal_reason = f"{own_discount:.0f}% off (${original_price:.0f} → ${current_price:.0f})"
+            elif vs_median >= MIN_DISCOUNT_PERCENT:
                 should_include = True
-                deal_reason = f"{vs_market_median:.0f}% below median market price of ${market_median:.0f}"
+                deal_reason = f"{vs_median:.0f}% below median market price of ${market_median:.0f}"
 
         if not should_include:
             logger.debug(
                 f"  Skip {item['retailer']}: ${current_price:.0f} "
-                f"(own_discount={own_discount}, vs_median={vs_market_median:.0f}%)"
+                f"(own={own_discount}%, vs_median={vs_median:.0f}%)"
             )
             continue
 
-        # Use the best available discount figure for display
-        display_discount = own_discount or (vs_market_median if vs_market_median > 0 else None)
+        display_discount = own_discount if own_discount else (vs_median if vs_median > 0 else None)
 
         deals.append({
             "id": f"retail_{abs(hash(item['link']))}",
@@ -219,11 +242,11 @@ def _analyse_prices(query: str, results: list[dict]) -> list[dict]:
             "title": item["title"],
             "url": item["link"],
             "description": (
-                f"{item['title']} at {item['retailer']}. "
-                f"{deal_reason}. "
-                f"Market range: ${market_low:.0f}–${market_high:.0f} across {len(priced)} retailers."
+                f"{item['title']} at {item['retailer']}. {deal_reason}. "
+                f"Checked {len(trusted)} trusted AU retailers: "
+                f"low=${market_low:.0f}, median=${market_median:.0f}."
             ),
-            "original_price": item["original_price"] or market_high,
+            "original_price": original_price or market_median,
             "sale_price": current_price,
             "discount_pct": display_discount,
             "votes": 0,
@@ -231,9 +254,8 @@ def _analyse_prices(query: str, results: list[dict]) -> list[dict]:
             "price_beat_retailer": is_officeworks,
             "is_cheapest": is_cheapest,
             "market_low": market_low,
-            "market_high": market_high,
             "market_median": market_median,
-            "retailer_count": len(priced),
+            "retailer_count": len(trusted),
             "deal_reason": deal_reason,
             "published": "",
             "fetched_at": now,
@@ -244,14 +266,12 @@ def _analyse_prices(query: str, results: list[dict]) -> list[dict]:
 
 def fetch_retailer_deals() -> list[dict]:
     """
-    For each product in SEARCH_QUERIES, run ONE Google Shopping search that returns
-    prices from all retailers simultaneously. Compare prices to find genuine discounts.
-
+    For each product in SEARCH_QUERIES, run ONE Google Shopping search.
     Serper budget: 1 call × len(SEARCH_QUERIES) per run.
-    With 3 products + 2 runs/day = ~180 calls/month (free tier = 2500/month).
+    3 products × 2 runs/day = ~180 calls/month (free tier = 2500/month).
     """
     if not SERPER_ENABLED:
-        logger.info("Serper disabled (SERPER_ENABLED=False) — skipping retailer price check")
+        logger.info("Serper disabled — skipping retailer price check")
         return []
 
     api_key = _get_api_key()
@@ -269,9 +289,8 @@ def fetch_retailer_deals() -> list[dict]:
         fresh = [d for d in deals if d["url"] not in seen_urls]
         seen_urls.update(d["url"] for d in fresh)
         all_deals.extend(fresh)
-
-        logger.info(f"  → {len(fresh)} deals found for '{product_query}'")
+        logger.info(f"  → {len(fresh)} quality deals for '{product_query}'")
         time.sleep(0.5)
 
-    logger.info(f"Retailers total: {len(all_deals)} genuine deals across {len(SEARCH_QUERIES)} products")
+    logger.info(f"Retailers total: {len(all_deals)} deals across {len(SEARCH_QUERIES)} products")
     return all_deals
