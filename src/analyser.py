@@ -63,6 +63,8 @@ def _build_prompt(deals: list[dict]) -> str:
         community_note = ""
         if deal.get("source") == "ozbargain" and deal.get("community_validated"):
             community_note = f" [COMMUNITY VALIDATED — {deal.get('votes', 0)} OzBargain upvotes]"
+        elif deal.get("price_beat_retailer"):
+            community_note = " [OFFICEWORKS — 5% Price Beat Guarantee, likely lowest AU price]"
 
         deals_text += (
             f"\nDeal {i}:{community_note}\n"
@@ -82,6 +84,10 @@ def _build_prompt(deals: list[dict]) -> str:
         "Deals marked COMMUNITY VALIDATED have been upvoted by real shoppers — "
         "they've already passed community scrutiny. Score these generously (baseline 7) "
         "unless there's a clear red flag like a fake inflated original price.\n"
+        "- Officeworks has a 'Lowest Price Guarantee' — they beat any competitor's price "
+        "by 5%, so they frequently have the lowest price in Australia even without a big "
+        "advertised discount. Deals marked OFFICEWORKS should be scored on absolute price "
+        "competitiveness, not just % off. If the price looks like the best available in AU, score 7+.\n"
         "- Watch for fake discounts: retailers sometimes inflate the 'original' price "
         "to make the discount look bigger than it is.\n"
         "- Consider value for Australian consumers specifically.\n\n"

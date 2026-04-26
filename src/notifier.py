@@ -20,10 +20,14 @@ from config import MAX_SLACK_ALERTS_PER_RUN, SLACK_CHANNEL_NAME
 logger = logging.getLogger(__name__)
 
 SOURCE_EMOJI = {
-    "ozbargain": "🔥",
-    "jbhifi": "🎵",
-    "kogan": "🛒",
-    "catch": "🎣",
+    "ozbargain":   "🔥",
+    "jbhifi":      "🎵",
+    "kogan":       "🛒",
+    "catch":       "🎣",
+    "officeworks": "🖊️",
+    "bigw":        "🏪",
+    "target":      "🎯",
+    "amazon":      "📦",
     "serper_shopping": "🔍",
 }
 
@@ -90,7 +94,9 @@ def _build_deal_block(deal: dict) -> list[dict]:
     # Build context line
     context_parts = [f"{source_emoji} {source.replace('_', ' ').title()}"]
     if deal.get("community_validated"):
-        context_parts.append(f"🏅 OzBargain Community Pick")
+        context_parts.append("🏅 OzBargain Community Pick")
+    if deal.get("price_beat_retailer"):
+        context_parts.append("🔖 Price Beat Guarantee")
     if votes > 0:
         context_parts.append(f"👍 {votes} votes")
     context_parts.append(f"{score_emoji} AI Score: {llm_score}/10")

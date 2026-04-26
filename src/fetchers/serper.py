@@ -108,7 +108,8 @@ def _search_web(query: str, api_key: str) -> list[dict]:
 
 def fetch_serper_deals() -> list[dict]:
     """
-    Run configured search queries via Serper and return filtered deals.
+    Run configured search queries via Serper Shopping and return filtered deals.
+    Results are cross-checked against the query keywords to avoid unrelated products.
     """
     api_key = _get_api_key()
     if not api_key:
@@ -120,6 +121,7 @@ def fetch_serper_deals() -> list[dict]:
     for query in SEARCH_QUERIES:
         logger.info(f"Serper shopping search: '{query}'")
         results = _search_shopping(query, api_key)
+        query_keywords = query.lower().split()
 
         for item in results:
             title = item.get("title", "")
@@ -132,6 +134,13 @@ def fetch_serper_deals() -> list[dict]:
 
             if not link or link in seen_urls:
                 continue
+
+            # Only keep results that actually match the product we searched for
+            title_lower = title.lower()
+            if not all(kw in title_lower for kw in query_keywords):
+                logger.debug(f"Skipping unrelated result: '{title[:60]}'")
+                continue
+
             seen_urls.add(link)
 
             sale_price = _parse_price(price_str)
@@ -160,6 +169,7 @@ def fetch_serper_deals() -> list[dict]:
                 "sale_price": sale_price,
                 "discount_pct": discount_pct,
                 "votes": 0,
+                "community_validated": False,
                 "rating": rating,
                 "reviews": reviews,
                 "published": "",

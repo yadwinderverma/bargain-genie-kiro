@@ -17,7 +17,7 @@ from typing import Optional
 import requests
 from bs4 import BeautifulSoup
 
-from config import MIN_DISCOUNT_PERCENT
+from config import MIN_DISCOUNT_PERCENT, SEARCH_QUERIES
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +37,20 @@ HEADERS = {
 
 REQUEST_TIMEOUT = 15
 
-# Retailer sites to search via Serper when direct scraping isn't possible
-RETAILER_SERPER_QUERIES = [
-    ("jbhifi",  "sale -50% off site:jbhifi.com.au"),
-    ("kogan",   "50% off clearance sale site:kogan.com"),
-    ("catch",   "50% off deals site:catch.com.au"),
-    ("amazon",  "50% off deals site:amazon.com.au"),
-    ("bigw",    "50% off sale site:bigw.com.au"),
-    ("target",  "50% off sale site:target.com.au"),
+# Retailer sites to search — combined with your SEARCH_QUERIES from config.py
+# so searches are always scoped to your specific products, not generic "50% off" noise.
+#
+# price_beat=True means: don't require a % discount — just find the product price.
+# Officeworks has a "Lowest Price Guarantee" (beats competitors by 5%), so they often
+# have the lowest price in Australia without advertising a big discount.
+RETAILER_SITES = [
+    {"name": "jbhifi",       "site": "site:jbhifi.com.au",       "price_beat": False},
+    {"name": "kogan",        "site": "site:kogan.com",            "price_beat": False},
+    {"name": "catch",        "site": "site:catch.com.au",         "price_beat": False},
+    {"name": "amazon",       "site": "site:amazon.com.au",        "price_beat": False},
+    {"name": "bigw",         "site": "site:bigw.com.au",          "price_beat": False},
+    {"name": "target",       "site": "site:target.com.au",        "price_beat": False},
+    {"name": "officeworks",  "site": "site:officeworks.com.au",   "price_beat": True},
 ]
 
 
@@ -77,10 +83,13 @@ def _extract_discount_from_text(text: str) -> Optional[float]:
 # Serper-based retailer search (primary method for blocked sites)
 # ---------------------------------------------------------------------------
 
-def _serper_search_retailer(retailer_name: str, query: str, api_key: str) -> list[dict]:
+def _serper_search_retailer(retailer_name: str, query: str, api_key: str, price_beat: bool = False) -> list[dict]:
     """
     Use Serper web search to find deals on a specific retailer site.
-    Returns parsed deal dicts.
+
+    price_beat=True: skip the MIN_DISCOUNT_PERCENT filter — used for Officeworks
+    which often has the lowest price via their 5% price beat guarantee without
+    advertising an explicit % discount.
     """
     headers = {
         "X-API-KEY": api_key,
@@ -135,8 +144,10 @@ def _serper_search_retailer(retailer_name: str, query: str, api_key: str) -> lis
             elif len(prices_clean) == 1:
                 sale_price = prices_clean[0]
 
-            if discount_pct is None or discount_pct < MIN_DISCOUNT_PERCENT:
-                continue
+            # Discount filter — skipped for price-beat retailers like Officeworks
+            if not price_beat:
+                if discount_pct is None or discount_pct < MIN_DISCOUNT_PERCENT:
+                    continue
 
             deals.append({
                 "id": f"{retailer_name}_{abs(hash(link))}",
@@ -149,6 +160,7 @@ def _serper_search_retailer(retailer_name: str, query: str, api_key: str) -> lis
                 "discount_pct": discount_pct,
                 "votes": 0,
                 "community_validated": False,
+                "price_beat_retailer": price_beat,  # Flag for LLM context
                 "published": "",
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
             })
@@ -235,40 +247,47 @@ def _scrape_jbhifi_direct() -> list[dict]:
 
 def fetch_retailer_deals() -> list[dict]:
     """
-    Fetch retailer deals. Uses Serper for sites that block scrapers,
-    and attempts direct scrape for JB Hi-Fi with Serper fallback.
+    Search for your specific products (from SEARCH_QUERIES in config.py) across
+    Australian retailer sites. Each product query is searched on each retailer site,
+    so you only get alerts for things you actually care about.
+
+    Officeworks is included without a discount threshold — their 5% price beat
+    guarantee means they often have the lowest price without advertising a % off.
     """
     api_key = os.environ.get("SERPER_API_KEY")
-    all_deals = []
-
-    # --- JB Hi-Fi: try direct scrape first ---
-    logger.info("Fetching JB Hi-Fi deals (direct scrape)...")
-    jb_deals = _scrape_jbhifi_direct()
-    logger.info(f"JB Hi-Fi direct: {len(jb_deals)} deals")
-
-    # If direct scrape got nothing and we have Serper, fall back
-    if not jb_deals and api_key:
-        logger.info("JB Hi-Fi direct scrape empty — falling back to Serper search")
-        jb_deals = _serper_search_retailer(
-            "jbhifi", "sale -50% off site:jbhifi.com.au", api_key
-        )
-        logger.info(f"JB Hi-Fi via Serper: {len(jb_deals)} deals")
-
-    all_deals.extend(jb_deals)
-
-    # --- Other retailers: Serper only (they block scrapers) ---
-    if api_key:
-        for retailer_name, query in RETAILER_SERPER_QUERIES[1:]:  # Skip jbhifi, already done
-            logger.info(f"Searching {retailer_name} via Serper...")
-            deals = _serper_search_retailer(retailer_name, query, api_key)
-            logger.info(f"{retailer_name}: {len(deals)} deals")
-            all_deals.extend(deals)
-            time.sleep(0.5)  # Small delay between API calls
-    else:
+    if not api_key:
         logger.warning(
-            "SERPER_API_KEY not set — skipping Kogan, Catch, Amazon AU, Big W, Target searches. "
+            "SERPER_API_KEY not set — skipping retailer searches. "
             "Add SERPER_API_KEY to GitHub secrets to enable these."
         )
+        return []
 
-    logger.info(f"Retailers total: {len(all_deals)} deals")
+    all_deals = []
+    seen_urls: set[str] = set()
+
+    for product_query in SEARCH_QUERIES:
+        for retailer in RETAILER_SITES:
+            retailer_name = retailer["name"]
+            site_filter = retailer["site"]
+            price_beat = retailer["price_beat"]
+
+            query = f"{product_query} {site_filter}"
+            label = f"{retailer_name} [price-beat]" if price_beat else retailer_name
+            logger.info(f"Searching {label}: '{product_query}'")
+
+            deals = _serper_search_retailer(retailer_name, query, api_key, price_beat=price_beat)
+
+            # Deduplicate across retailer/product combos
+            fresh = [d for d in deals if d["url"] not in seen_urls]
+            seen_urls.update(d["url"] for d in fresh)
+            all_deals.extend(fresh)
+
+            time.sleep(0.3)
+
+    price_beat_count = sum(1 for d in all_deals if d.get("price_beat_retailer"))
+    logger.info(
+        f"Retailers total: {len(all_deals)} deals "
+        f"({price_beat_count} from price-beat retailers) "
+        f"across {len(SEARCH_QUERIES)} products × {len(RETAILER_SITES)} sites"
+    )
     return all_deals

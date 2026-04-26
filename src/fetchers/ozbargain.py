@@ -11,7 +11,7 @@ from typing import Optional
 import feedparser
 import requests
 
-from config import MIN_DISCOUNT_PERCENT, MIN_OZBARGAIN_VOTES, OZBARGAIN_MAX_ITEMS, OZBARGAIN_RSS_URL, OZBARGAIN_TRUSTED, OZBARGAIN_MIN_VOTES_TRUSTED
+from config import MIN_DISCOUNT_PERCENT, MIN_OZBARGAIN_VOTES, OZBARGAIN_MAX_ITEMS, OZBARGAIN_RSS_URL, OZBARGAIN_TRUSTED, OZBARGAIN_MIN_VOTES_TRUSTED, SEARCH_QUERIES
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +73,20 @@ def _parse_votes(entry) -> int:
     return 0
 
 
+def _matches_search_queries(title: str, description: str) -> bool:
+    """
+    Check if a deal title/description matches any of the user's search queries.
+    Each query is split into keywords — all keywords must appear (case-insensitive).
+    e.g. "beats powerbeats pro 2" requires all four words to be present.
+    """
+    text = (title + " " + description).lower()
+    for query in SEARCH_QUERIES:
+        keywords = query.lower().split()
+        if all(kw in text for kw in keywords):
+            return True
+    return False
+
+
 def fetch_ozbargain_deals() -> list[dict]:
     """
     Fetch and parse deals from OzBargain RSS feed.
@@ -104,6 +118,10 @@ def fetch_ozbargain_deals() -> list[dict]:
                 discount_pct = round((1 - sale_price / original_price) * 100, 1)
 
             votes = _parse_votes(entry)
+
+            # --- Product filter: only keep deals matching your SEARCH_QUERIES ---
+            if not _matches_search_queries(title, description):
+                continue
 
             # Apply filters
             passes_discount = discount_pct is not None and discount_pct >= MIN_DISCOUNT_PERCENT
