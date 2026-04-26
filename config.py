@@ -18,14 +18,9 @@ OZBARGAIN_MIN_VOTES_TRUSTED = 5 # Votes needed to get the trust boost (lower bar
 # --- Search Terms for Google Shopping via Serper ---
 # Add or remove product categories you care about
 SEARCH_QUERIES = [
-    "electronics deals Australia",
-    "laptop deals Australia",
-    "TV deals Australia",
-    "headphones deals Australia",
-    "gaming deals Australia",
-    "appliances deals Australia",
-    "phone deals Australia",
-    "tablet deals Australia",
+    "beats powerbeats pro 2",
+    "shokz openfit 2",
+    "bose ultra open earbuds",
 ]
 
 # --- OzBargain RSS ---
