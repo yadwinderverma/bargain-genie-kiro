@@ -61,7 +61,11 @@ def _build_prompt(deals: list[dict]) -> str:
     deals_text = ""
     for i, deal in enumerate(deals, 1):
         community_note = ""
-        if deal.get("source") == "ozbargain" and deal.get("community_validated"):
+        if deal.get("is_freebie"):
+            duration = deal.get("duration_note", "")
+            duration_str = f" ({duration})" if duration else ""
+            community_note = f" [FREEBIE{duration_str} — {deal.get('votes', 0)} OzBargain upvotes]"
+        elif deal.get("source") == "ozbargain" and deal.get("community_validated"):
             community_note = f" [COMMUNITY VALIDATED — {deal.get('votes', 0)} OzBargain upvotes]"
         elif deal.get("price_beat_retailer"):
             community_note = " [OFFICEWORKS — 5% Price Beat Guarantee, likely lowest AU price]"
@@ -80,15 +84,18 @@ def _build_prompt(deals: list[dict]) -> str:
     return (
         "You are an expert Australian bargain hunter. Rate each deal below.\n\n"
         "SIGNALS (in order of trust):\n"
-        "1. OzBargain COMMUNITY VALIDATED — the Australian deal community posted and upvoted it. "
+        "1. FREEBIE — it's free, community upvoted it. Score 8+ unless it's clearly "
+        "useless, region-locked, or requires a paid commitment to claim.\n"
+        "2. OzBargain COMMUNITY VALIDATED — the Australian deal community posted and upvoted it. "
         "That alone is a strong signal. Score baseline 7+. Only go lower if it's clearly a fake "
         "discount or a product nobody would want.\n"
-        "2. Officeworks PRICE BEAT — they guarantee to beat any AU competitor by 5%, so if "
+        "3. Officeworks PRICE BEAT — they guarantee to beat any AU competitor by 5%, so if "
         "they're the cheapest it's the best available price in Australia. Score on value.\n"
-        "3. Amazon AU / other retailers — only included if 40%+ off market price. "
+        "4. Amazon AU / other retailers — only included if 40%+ off market price. "
         "Verify the discount looks real (not an inflated original price trick). Score 7+ "
         "only if you'd genuinely tell a friend about it.\n\n"
         "REJECT if:\n"
+        "- Freebie requires a paid subscription to claim with no easy cancel\n"
         "- Original price looks inflated to manufacture a fake % off\n"
         "- It's a used/refurbished item not clearly disclosed\n"
         "- The 'deal' is just normal retail price\n\n"

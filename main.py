@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from src.analyser import analyse_deals
 from src.cache import filter_new_deals, mark_deals_alerted
-from src.fetchers.ozbargain import fetch_ozbargain_deals
+from src.fetchers.ozbargain import fetch_ozbargain_deals, fetch_ozbargain_freebies
 from src.fetchers.retailers import fetch_retailer_deals
 from src.notifier import send_slack_alerts, send_slack_error_message, send_slack_no_deals_message
 
@@ -44,8 +44,12 @@ def run() -> int:
         all_deals = []
 
         ozb_deals = fetch_ozbargain_deals()
-        logger.info(f"OzBargain: {len(ozb_deals)} deals")
+        logger.info(f"OzBargain deals: {len(ozb_deals)}")
         all_deals.extend(ozb_deals)
+
+        ozb_freebies = fetch_ozbargain_freebies()
+        logger.info(f"OzBargain freebies: {len(ozb_freebies)}")
+        all_deals.extend(ozb_freebies)
 
         retailer_deals = fetch_retailer_deals()
         logger.info(f"Retailers (Shopping): {len(retailer_deals)} deals")

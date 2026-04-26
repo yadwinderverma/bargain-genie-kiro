@@ -11,7 +11,12 @@ from typing import Optional
 import feedparser
 import requests
 
-from config import MIN_DISCOUNT_PERCENT, MIN_OZBARGAIN_VOTES, OZBARGAIN_MAX_ITEMS, OZBARGAIN_RSS_URL, OZBARGAIN_TRUSTED, OZBARGAIN_MIN_VOTES_TRUSTED, SEARCH_QUERIES
+from config import (
+    MIN_DISCOUNT_PERCENT, MIN_OZBARGAIN_VOTES, OZBARGAIN_MAX_ITEMS,
+    OZBARGAIN_RSS_URL, OZBARGAIN_TRUSTED, OZBARGAIN_MIN_VOTES_TRUSTED,
+    SEARCH_QUERIES, OZBARGAIN_FREEBIES_ENABLED, OZBARGAIN_FREEBIES_RSS_URL,
+    OZBARGAIN_FREEBIES_MAX_ITEMS, OZBARGAIN_FREEBIES_MIN_VOTES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -162,3 +167,78 @@ def fetch_ozbargain_deals() -> list[dict]:
         logger.error(f"Error fetching OzBargain deals: {e}", exc_info=True)
 
     return deals
+
+
+def fetch_ozbargain_freebies() -> list[dict]:
+    """
+    Fetch freebies from OzBargain's dedicated freebie RSS feed.
+    No product filter — everything free with enough votes is worth alerting.
+    Free trials, free subscriptions, free apps, free products, etc.
+    """
+    if not OZBARGAIN_FREEBIES_ENABLED:
+        return []
+
+    logger.info(f"Fetching OzBargain freebies feed: {OZBARGAIN_FREEBIES_RSS_URL}")
+    freebies = []
+
+    try:
+        feed = feedparser.parse(OZBARGAIN_FREEBIES_RSS_URL)
+        if feed.bozo and not feed.entries:
+            logger.error(f"Failed to parse OzBargain freebies RSS: {feed.bozo_exception}")
+            return freebies
+
+        logger.info(f"Found {len(feed.entries)} freebie entries")
+
+        for entry in feed.entries[:OZBARGAIN_FREEBIES_MAX_ITEMS]:
+            title = entry.get("title", "")
+            link = entry.get("link", "")
+            description = entry.get("summary", "")
+            published = entry.get("published", "")
+            votes = _parse_votes(entry)
+
+            # Only surface well-upvoted freebies — filters out low-quality spam
+            if votes < OZBARGAIN_FREEBIES_MIN_VOTES:
+                logger.debug(f"Freebie skipped (only {votes} votes): {title[:60]}")
+                continue
+
+            # Detect if it's time-limited (e.g. "2 months free", "free trial")
+            is_limited = bool(re.search(
+                r"\d+\s*(day|week|month|year)s?\s*free|free\s*trial|limited\s*time",
+                title + " " + description,
+                re.IGNORECASE,
+            ))
+            is_lifetime = bool(re.search(
+                r"lifetime|forever|permanent|always\s*free",
+                title + " " + description,
+                re.IGNORECASE,
+            ))
+
+            duration_note = ""
+            if is_lifetime:
+                duration_note = "lifetime"
+            elif is_limited:
+                duration_note = "limited time"
+
+            freebies.append({
+                "id": f"ozb_free_{entry.get('id', link)}",
+                "source": "ozbargain_freebie",
+                "title": title,
+                "url": link,
+                "description": description[:500],
+                "original_price": None,
+                "sale_price": 0.0,
+                "discount_pct": 100.0,
+                "votes": votes,
+                "community_validated": True,  # Freebies are always community-validated
+                "is_freebie": True,
+                "duration_note": duration_note,
+                "published": published,
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+            })
+
+        logger.info(f"OzBargain freebies: {len(freebies)} passed (>= {OZBARGAIN_FREEBIES_MIN_VOTES} votes)")
+
+    except Exception as e:
+        logger.error(f"Error fetching OzBargain freebies: {e}", exc_info=True)
+
+    return freebies

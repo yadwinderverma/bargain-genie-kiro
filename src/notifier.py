@@ -20,6 +20,7 @@ from config import MAX_SLACK_ALERTS_PER_RUN, SLACK_CHANNEL_NAME, SLACK_NOTIFY_US
 logger = logging.getLogger(__name__)
 
 SOURCE_EMOJI = {
+    "ozbargain_freebie": "🆓",
     "ozbargain":   "🔥",
     "jbhifi":      "🎵",
     "kogan":       "🛒",
@@ -82,14 +83,19 @@ def _build_deal_block(deal: dict) -> list[dict]:
     score_emoji = _get_score_emoji(llm_score)
 
     # Build price display
-    price_parts = []
-    if sale_price:
-        price_parts.append(f"*{_format_price(sale_price)}*")
-    if original_price and sale_price and original_price != sale_price:
-        price_parts.append(f"~{_format_price(original_price)}~")
-    if discount_pct:
-        price_parts.append(f"*{discount_pct:.0f}% OFF*")
-    price_text = "  ".join(price_parts) if price_parts else "Price not available"
+    if deal.get("is_freebie"):
+        duration = deal.get("duration_note", "")
+        duration_str = f" · {duration}" if duration else ""
+        price_text = f"🆓 *FREE{duration_str}*"
+    else:
+        price_parts = []
+        if sale_price:
+            price_parts.append(f"*{_format_price(sale_price)}*")
+        if original_price and sale_price and original_price != sale_price:
+            price_parts.append(f"~{_format_price(original_price)}~")
+        if discount_pct:
+            price_parts.append(f"*{discount_pct:.0f}% OFF*")
+        price_text = "  ".join(price_parts) if price_parts else "Price not available"
 
     # Build context line
     context_parts = [f"{source_emoji} {source.replace('_', ' ').title()}"]
