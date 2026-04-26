@@ -1,0 +1,50 @@
+name: Bargain Hunter
+
+on:
+  schedule:
+    # 8am AEST = 22:00 UTC (previous day)
+    - cron: '0 22 * * *'
+    # 8pm AEST = 10:00 UTC
+    - cron: '0 10 * * *'
+  # Allow manual trigger from GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  hunt:
+    name: Hunt for Bargains
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: write   # Needed to commit the updated deals cache
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Bargain Hunter
+        env:
+          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: python main.py
+
+      - name: Commit updated deals cache
+        run: |
+          git config --local user.email "bargain-hunter[bot]@users.noreply.github.com"
+          git config --local user.name "Bargain Hunter Bot"
+          git add data/deals_cache.json
+          # Only commit if there are changes
+          git diff --staged --quiet || git commit -m "chore: update deals cache [skip ci]"
+          git push
