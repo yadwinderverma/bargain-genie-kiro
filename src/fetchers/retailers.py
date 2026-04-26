@@ -18,7 +18,7 @@ from typing import Optional
 
 import requests
 
-from config import MIN_DISCOUNT_PERCENT, OFFICEWORKS_PRICE_BEAT, SEARCH_QUERIES, SERPER_ENABLED
+from config import MIN_DISCOUNT_PERCENT, SEARCH_QUERIES, SERPER_ENABLED
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +182,7 @@ def _analyse_prices(query: str, results: list[dict]) -> list[dict]:
         should_include = False
         deal_reason = ""
 
-        if is_officeworks and OFFICEWORKS_PRICE_BEAT:
+        if is_officeworks:
             # Officeworks: include if they're cheapest or near-cheapest
             # Their price beat means this is likely the best you'll get in AU
             if is_cheapest:
