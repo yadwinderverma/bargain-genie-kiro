@@ -10,7 +10,7 @@ SEARCH_QUERIES = [
     "beats powerbeats pro 2",
     "shokz openfit 2",
     "bose ultra open earbuds",
-    "roborock",
+    "airpod",
 ]
 
 # --- Deal Thresholds ---
