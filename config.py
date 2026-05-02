@@ -44,11 +44,9 @@ OZBARGAIN_RSS_URL = "https://www.ozbargain.com.au/deals/feed"
 OZBARGAIN_MAX_ITEMS = 50
 
 # --- OzBargain Freebies ---
-# Separate RSS feed for free stuff — no product filter, everything free is worth alerting.
-# Includes: free subscriptions, free trials, free apps, free products, etc.
+# Freebies are in the main deals feed tagged as "freebie" — there's no separate feed.
+# We detect them by looking for free/freebie signals in the title/description.
 OZBARGAIN_FREEBIES_ENABLED = True
-OZBARGAIN_FREEBIES_RSS_URL = "https://www.ozbargain.com.au/tag/freebie/feed"
-OZBARGAIN_FREEBIES_MAX_ITEMS = 20   # Freebies move fast, top 20 is enough
 OZBARGAIN_FREEBIES_MIN_VOTES = 20   # Higher bar — only well-upvoted freebies (avoids spam)
 
 # --- Cache ---
