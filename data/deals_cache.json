@@ -1,13 +1,13 @@
 {
-  "retail_3958207114242918076": {
-    "seen_at": "2026-05-08T11:16:22.641470+00:00",
-    "title": "Apple AirPods Pro",
-    "source": "kogan",
-    "alerted": true
-  },
   "retail_6617931480002329734": {
     "seen_at": "2026-05-12T22:55:47.495903+00:00",
     "title": "Apple AirPods Pro",
     "source": "kogan"
+  },
+  "retail_8322405391821031814": {
+    "seen_at": "2026-05-16T11:03:02.636747+00:00",
+    "title": "Apple AirPods Pro",
+    "source": "kogan",
+    "alerted": true
   }
 }
